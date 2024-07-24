@@ -1,0 +1,495 @@
+from pathlib import Path
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.animation import PillowWriter 
+import pandas as pd
+import math
+from pepop.loss import LossFn
+import random
+from pepop.constants import AA_VALUES
+from tqdm import tqdm
+
+#import pepop.animation as animation
+
+#Simulated Annealing imports:
+# import math 
+# import random
+# import tsp_utils
+# import animated_visualizer 
+
+class Engine:
+    """
+    Debugging: Plots and graphs looked different from last time when graphs were generated. 
+    """
+    aa = AA_VALUES
+
+    def __init__(
+            self, 
+            loss_fn: LossFn, 
+            temperature=None, 
+            starting_sequence=None, 
+            peptide_length=None,
+            aminoacids=None, 
+            n_trials=None,
+            record_interval=10,
+            seed=None,
+            best_n_sequences = 10
+            ):
+        """Initalize the Monte Carlo Engine (Algo).
+        Parameters
+        ---------- 
+        1. loss_fn: 
+            considers the properties of interests and calculates PepNN and Janin score 
+        2. temperature: 
+            regulates how the algo converges to the final solution
+        3. starting_sequence:  
+            include a starting sequence for a known peptide of interest
+        4. peptide_length: 
+            specify the length of peptide randomly generated if starting sequence is None.
+        5. aminoacids: 
+            dictionary of 20 a.a defined.
+        6. n_trials: 
+            the total number of Monte Carlo steps to run. 
+        7. record_interval: 
+            the number of steps between each output
+        8. seed: 
+            the seed for the random number generator 
+        
+        """
+        self.loss_fn = loss_fn
+        self.temperature = temperature
+        if starting_sequence is not None:
+            self.starting_sequence = starting_sequence
+        elif peptide_length is not None:
+            self.starting_sequence = self.generate_peptide(peptide_length)
+        else:
+            raise ValueError("Either starting_sequence or peptide_length must be provided")
+        self.peptide_length = len(self.starting_sequence)
+        if aminoacids is None:
+            self.aminoacids = ["G", "A", "L", "M", "F",
+                               "W", "K", "Q", "E", "S",
+                               "P", "V", "I", "C", "Y",
+                               "H", "R", "N", "D", "T"
+                               ]
+        else:
+            self.aminoacids = AA_VALUES
+        self.n_trials = n_trials
+        self.record_interval = record_interval
+        self.seed = seed
+
+        # Initialize system constants: 
+        assert len(self.starting_sequence) <= 30, "Peptide sequence must be less than 30"
+
+        # optimized sequence should be the sequence after initialization 
+        self.optimized_sequence = self.starting_sequence
+        self.best_sequence = self.starting_sequence
+  
+        # best energy is the final energy calculated from the loss function:
+        self.best_energy, _ = self.loss_fn.compute_energy(self.starting_sequence)
+        self.current_state = None
+
+        # tracking the energy change (consider putting acceptance rate in the dictionary)
+        self.tracker = {key: 0 for key in self.tracker_keys}
+        self.track_energy = np.zeros(self.n_trials + 1)
+        # each iteration of the list creates a new dict (pay attention for properties of interest)
+        self.track_raw_energy = [{} for _ in range(self.n_trials + 1)]
+
+        self.acceptance_rates = []
+        self.current_step = 1 
+        self.best_n_sequences = best_n_sequences   
+        self.best_sequences_list = []
+
+    @property
+    def tracker_keys(self):
+        return ("n_accepted", "n_rejected", "n_proposals")
+    
+    def generate_peptide(self, peptide_length):
+        """Generating a random peptide from the AA_VALUES constant"""
+        aa_keys = list(self.aa.keys())
+        peptide = ''.join(np.random.choice(aa_keys, peptide_length))
+        return peptide
+
+    def get_sequence(self):
+        """For debugging purposes to ensure self.optimized_sequence is being updated correctly"""
+        return self.optimized_sequence
+        
+    def modify_peptide(self, peptide):
+        """Inducing a random change in the peptide sequence per trial move
+
+        Old version - only 1 single a.a. swap per iteration
+        """
+        aminoacid = np.random.choice(self.aminoacids)
+        index = np.random.randint(len(peptide))
+        pep = list(peptide)
+        pep[index] = aminoacid
+        peptide = ''.join(pep)
+        return peptide
+    
+    # def modify_peptide(self, peptide):
+    #     """Inducing a random change in the peptide sequence per trial move
+
+    #     Update: selects two a.a for mutation
+    #     """
+    #     indices = random.sample(range(len(peptide)), 2)
+    #     aminoacids = np.random.choice(self.aminoacids, 2)
+    
+    #     pep = list(peptide)
+    #     pep[indices[0]] = aminoacids[0]
+    #     pep[indices[1]] = aminoacids[1]
+    
+    #     peptide = ''.join(pep)
+    #     return peptide
+
+    def run_simulation(self):
+        """
+        Run the Monte Carlo simulation for a specified number of trials
+        -----
+        formerly known as - optimization_via_evolution 
+        """
+        # Initialize the initial peptide sequence and the proposed peptide sequence
+        self.initialize_sequence()
+        # Runs the simulation [self.trial_move() = self.run()]
+        self.run_all_steps()
+
+        # Plot graphs and statistics:  
+        # self.statistics()
+        return 
+
+    def initialize_sequence(self):
+        """Initialize the starting sequence and its energy"""
+        if self.starting_sequence is None:
+            self.starting_sequence = self.generate_peptide(self.peptide_length)
+        else:
+            self.starting_sequence == self.starting_sequence
+
+        initial_peptide = self.starting_sequence
+        initial_energy, initial_raw_energies = self.loss_fn.compute_energy(initial_peptide)
+        
+        # Track the starting point:
+        self.track_energy[0] = initial_energy
+        self.track_raw_energy[0] = initial_raw_energies
+        self.current_state = initial_energy
+        self.current_raw_state = initial_raw_energies   
+        return 
+
+    def run_all_steps(self):
+        """Monte Carlo Sampling Algo
+        Simulation includes the following:
+          1. Peptriever energy
+          2. Janin scale energy
+          3. Weighted energy calculation
+        """
+        for step in tqdm(range(self.n_trials), desc="Running Monte Carlo Simulation", total=self.n_trials):
+            current_peptide = self.optimized_sequence
+            proposed_peptide = self.modify_peptide(current_peptide)
+            current_energy = self.track_energy[step]
+            current_raw_energies = self.track_raw_energy[step]  
+            new_energy, new_raw_energies = self.loss_fn.compute_energy(proposed_peptide)
+
+            delta_ene = new_energy - current_energy
+
+            accepted = self.metropolis_acceptance(delta_ene)
+            if accepted:
+                self.optimized_sequence = proposed_peptide
+                self.track_energy[step + 1] = new_energy
+                self.track_raw_energy[step + 1] = new_raw_energies
+                #debug why accepted peptide doesn't continue to evolve:
+                #print(f"accepted_peptide is {proposed_peptide}")
+
+                if new_energy < self.best_energy:
+                    self.best_energy = new_energy
+                    self.best_sequence = proposed_peptide
+                self.tracker["n_accepted"] += 1
+            else:
+                self.track_energy[step + 1] = current_energy
+                self.track_raw_energy[step + 1] = current_raw_energies
+                self.tracker["n_rejected"] += 1
+
+            if self.best_sequence not in [seq for seq, _ in self.best_sequences_list]:
+                self.best_sequences_list.append((self.best_sequence, self.best_energy))
+                self.best_sequences_list = sorted(self.best_sequences_list, key=lambda x: x[1])
+        
+            if len(self.best_sequences_list) > self.best_n_sequences:
+                self.best_sequences_list = self.best_sequences_list[:self.best_n_sequences]
+
+            if (step + 1) % self.record_interval == 0:
+                self.record_outputs()
+
+            self.current_step += 1 
+            self.tracker['n_proposals'] += 1
+
+        return self.optimized_sequence
+
+    def metropolis_acceptance(self, delta_ene):
+        """Determine whether to accept or reject move based on the Metropolis criterion."""
+        return delta_ene < 0 or np.random.rand() < np.exp(-delta_ene / self.temperature)
+    
+    def record_outputs(self):
+        """Record and log the state of the system over n_trials"""
+        acceptance_ratio = (self.tracker["n_accepted"] / self.current_step) * 100
+    
+        if self.current_step % self.record_interval == 0:
+            self.acceptance_rates.append(acceptance_ratio)
+
+    #This graph is not looking like the PPT graphs where energy is negative. 
+    def plot_energy(self, path: str):
+        """Minimization of energy over time"""
+        plt.figure(figsize=(10, 6))
+        plt.plot(self.track_energy,
+                 color='blue',
+                 linewidth=2,
+                 label='Energy Minimization')
+        plt.xlabel("Total Number of Proposed Steps")
+        plt.ylabel("Combined Energy (AEU)")
+        plt.title("Best Binders for Targeting ApoB")
+        plt.savefig(path)
+
+    def plot_raw_energy(self, path: str):
+        """Visualize the raw data of each property of interest as its absolute value for targets"""
+        raw_data = pd.DataFrame(self.track_raw_energy)
+        #print(f"data frame and its properties of interest \n {raw_data.iloc[0]}")
+        #^currently is a list of dictionaries each of which all the values of all the keys is a list. 
+
+        target_raw_data = raw_data["target"].to_list()
+        convert_targets = [
+            {K: (v[0] if v else None) for K, v in d.items()} for d in target_raw_data]
+
+        target_df = pd.DataFrame(convert_targets)
+        #print(f" this is the processed target energy (aka delta_ene) \n {target_df}")
+
+        n_properties = len(target_df.columns)
+
+        if n_properties == 1:
+            fig, axes = plt.subplots(1, 1, figsize=(10, 6))
+            axes = [axes]
+        else:
+            fig, axes = plt.subplots(n_properties, 1, figsize=(10, 6 * n_properties))
+
+        for ax, col in zip(axes, target_df.columns):
+            col_data = target_df[col]
+            ax.plot(col_data, linewidth=2, label=col)
+            if np.min(col_data) > 0.0 and np.max(col_data) < 1.0:
+                ax.set_yscale('log')
+                
+            ax.set_xlabel("Number of Proposed Steps")
+            ax.set_ylabel("Raw Absolute Energy")
+            ax.set_title(f"Raw {col} of the System over Proposed Steps")
+            ax.grid(True)
+        plt.tight_layout()
+        plt.savefig(path)   
+
+    def plot_acceptance_rate(self, path: str):
+        plt.figure(figsize=(10, 6))
+        x = np.arange(0, self.n_trials, self.record_interval)
+        plt.plot(x, self.acceptance_rates, 
+                 color='red',
+                 linewidth=2,
+                 label='Acceptance Rate')
+        plt.xlabel("Trial Intervals")
+        plt.ylabel("Acceptance Rate (%)")
+        plt.title("Acceptance Rate Over Time")
+        plt.legend()
+        plt.savefig(path)
+
+class SimulatedAnnealing(Engine):
+    def __init__(
+        self, 
+        loss_fn: LossFn, 
+        temperature=None, 
+        starting_sequence=None, 
+        peptide_length=None,
+        aminoacids=None, 
+        n_trials=None,
+        record_interval=10,
+        seed=None,
+        best_n_sequences = 10,  
+        cooling_schedule=None,
+        coors=None, 
+        alpha=None,  
+        stopping_temp=None, 
+        stopping_iter=None,  
+        annealing=True,  # Annealing Parameter (TRUE = Always On)   
+        ):
+        super().__init__(
+            loss_fn=loss_fn,
+            temperature=temperature,
+            starting_sequence=starting_sequence,
+            peptide_length=peptide_length,
+            aminoacids=aminoacids,
+            n_trials=n_trials,
+            record_interval=record_interval,
+            seed=seed,
+            best_n_sequences = 10
+        )
+
+        # Simulated Annealing Parameters
+        self.coors = coors
+        self.alpha = alpha
+        self.stopping_temp = stopping_temp
+        self.stopping_iter = stopping_iter
+        self.loss_fn = loss_fn
+        self.n_trials = n_trials
+        self.annealing = annealing  # annealing attribute
+        self.T_in = temperature  # initial temperature attribute
+
+        if cooling_schedule is None:
+            self.cooling_schedule = self.default_cooling_schedule(n_trials)
+        else:
+            self.cooling_schedule = cooling_schedule
+
+        # Initial Values
+        self.optimized_sequence = self.starting_sequence
+        self.best_sequence = self.starting_sequence
+        self.best_energy, _ = self.loss_fn.compute_energy(self.starting_sequence)
+        self.current_state = None
+        
+        # Tracking the system 
+        self.tracker = {key: 0 for key in self.tracker_keys}
+        self.track_energy = np.zeros(self.n_trials + 1)
+        self.track_raw_energy = [{} for _ in range(self.n_trials + 1)]
+        self.en_evo = [self.best_energy]  # Energy evolution
+        self.T = [self.T_in]  # Temperature evolution
+
+        self.acceptance_rates = []
+        self.current_step = 1
+        self.best_n_sequences = best_n_sequences   
+        self.best_sequences_list = []
+
+        # Initial energy
+        self.track_energy[0] = self.best_energy
+        self.track_raw_energy[0] = _
+
+    def default_cooling_schedule(self, n_steps):
+        """Aka. quenching effect for annealing using np.linspace"""
+        assert self.stopping_temp <= self.temperature
+        return np.linspace(self.temperature, self.stopping_temp, n_steps)
+    
+    def sa_metropolis_acceptance(self, delta_ene):
+        """Determine whether to accept or reject move based on the Metropolis criterion."""
+        self.temperature = self.cooling_schedule[self.current_step - 1]
+        return delta_ene < 0 or np.random.rand() < np.exp(-delta_ene / self.temperature)
+
+    def run_simulated_annealing(self):
+        """Call the parent class key methods to run the MC simulation"""
+        self.initialize_sequence()
+        self.anneal()
+        return 
+    
+    def anneal(self):
+        """Run the Simulated Annealing algorithm for a specified number of trials."""
+        current_peptide = self.optimized_sequence
+        current_energy, _ = self.loss_fn.compute_energy(current_peptide)
+        self.track_energy[0] = current_energy
+
+        for step in tqdm(range(1, self.n_trials + 1), desc="Running Simulated Annealing", total=self.n_trials):
+            temperature = self.cooling_schedule[step - 1]
+            self.T.append(temperature)
+
+            #1. Generate a proposed peptide
+            proposed_peptide = self.modify_peptide(current_peptide)
+            proposed_energy, _ = self.loss_fn.compute_energy(proposed_peptide)
+
+            delta_prop = proposed_energy - current_energy   
+
+            if self.sa_metropolis_acceptance(delta_prop):
+                current_peptide = proposed_peptide
+                current_energy = proposed_energy
+                self.optimized_sequence = current_peptide
+                
+            
+            self.track_energy[step] = current_energy
+            self.en_evo.append(current_energy)
+            self.T.append(temperature)
+
+            if current_energy < self.best_energy:
+                self.best_energy = current_energy
+                self.best_sequence = current_peptide
+                self.tracker["n_accepted"] += 1
+            else:
+                self.tracker["n_rejected"] += 1
+
+            if self.best_sequence not in [seq for seq, _ in self.best_sequences_list]:
+                self.best_sequences_list.append((self.best_sequence, self.best_energy))
+                self.best_sequences_list = sorted(self.best_sequences_list, key=lambda x: x[1])
+        
+            if len(self.best_sequences_list) > self.best_n_sequences:
+                self.best_sequences_list = self.best_sequences_list[:self.best_n_sequences]
+
+            if (step + 1) % self.record_interval == 0:
+                super().record_outputs()
+
+            self.tracker['n_proposals'] += 1
+        
+        return self.optimized_sequence
+
+    def plot_raw_peptriever(self):
+        """Plot of peptriever score (targets & non_targets)."""
+        plt.figure(figsize=(10, 6))
+        plt.plot(self.track_raw_energy, label="Raw Energies")
+        plt.xlabel("Trials")
+        plt.ylabel("Energy")
+        plt.title("Tracking Raw Energies")
+        plt.legend()
+        plt.show()
+    
+    def plot_raw_janin(self):
+        """Plot of the janin score"""
+        janin = np.arange(0, self.loss_fn.janin_energy())
+        plt.figure(figsize=(10, 6))
+        plt.plot(janin, label="Janin Energies (Hydrophobicity)")
+        plt.xlabel("Number of Proposed Steps")
+        plt.ylabel("Janin Score")
+        plt.title("Raw Energy of Janin Score")
+        plt.legend()
+        plt.show()
+
+    def plot_acceptance_rate(self, path: str):
+        plt.figure(figsize=(10, 6))
+        x = np.arange(0, self.n_trials, self.record_interval)
+        print(len(x), len(self.acceptance_rates))
+
+        plt.plot(x, self.acceptance_rates, 
+                 color='red',
+                 linewidth=2,
+                 label='Acceptance Rate')
+        plt.xlabel("Trial Intervals")
+        plt.ylabel("Acceptance Rate (%)")
+        plt.title("Acceptance Rate Over Time")
+        plt.legend()
+        plt.savefig(path)
+
+    # def plot_raw_energies(self, path: str):
+    #     """Visualize the raw data of each property of interest as its absolute value for targets"""
+    #     raw_data = pd.DataFrame(self.track_raw_energy)
+    #     print(f"data frame and its properties of interest \n {raw_data.iloc[0]}")
+    #     #^currently is a list of dictionaries each of which all the values of all the keys is a list. 
+
+    #     target_raw_data = raw_data["target"].to_list()
+    #     convert_targets = [
+    #         {K: (v[0] if v else None) for K, v in d.items()} for d in target_raw_data]
+
+    #     target_df = pd.DataFrame(convert_targets)
+    #     print(f" this is the processed target energy (aka delta_ene) \n {target_df}")
+
+    #     n_properties = len(target_df.columns)
+
+    #     if n_properties == 1:
+    #         fig, axes = plt.subplots(1, 1, figsize=(10, 6))
+    #         axes = [axes]
+    #     else:
+    #         fig, axes = plt.subplots(n_properties, 1, figsize=(10, 6 * n_properties))
+
+    #     for ax, col in zip(axes, target_df.columns):
+    #         col_data = target_df[col]
+    #         ax.plot(col_data, linewidth=2, label=col)
+    #         if np.min(col_data) > 0.0 and np.max(col_data) < 1.0:
+    #             ax.set_yscale('log')
+                
+    #         ax.set_xlabel("Number of Proposed Steps")
+    #         ax.set_ylabel("Raw Absolute Energy")
+    #         ax.set_title(f"Raw {col} of the System over Proposed Steps")
+    #         ax.grid(True)
+    #     plt.tight_layout()
+    #     plt.savefig(path)   
+
+    
