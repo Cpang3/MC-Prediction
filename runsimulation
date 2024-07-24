@@ -1,0 +1,209 @@
+from pathlib import Path
+from pepop.loss import LossFn
+from pepop.engine import Engine, SimulatedAnnealing
+from pepop.constants import AA_VALUES
+
+def split_sequence(target_sequences, non_target_sequences, segment_size):
+    """Split target and non-target protein sequences into smaller segments of a specified size.#"""
+    split_target_sequence = []
+    split_non_target_sequence = []
+    
+    for sequence in target_sequences:
+        for i in range(0, len(sequence), segment_size):
+            split_target_sequence.append(sequence[i:i + segment_size])
+    
+    for sequence in non_target_sequences:
+        for i in range(0, len(sequence), segment_size):
+            split_non_target_sequence.append(sequence[i:i + segment_size])
+    
+    return split_target_sequence, split_non_target_sequence
+
+def main_engine():
+    """Run the simulation, import sequences, and set MC parameters
+
+    ---------
+    Required tasks to do:
+    1. Fix the order of magnitude for energy scale
+    2. Adjust and normalize the system scale between 0 to 1 
+    3. Specifically, Janin scale needs playing with (we don't want it to be hydrophobic, so we avoid higher numbers from the janin energies)
+    4. Find a mathametical approach to make this work. 
+
+    Create a new python file and do some statistics on it, so the result is much clearer. 
+
+    Once you get it to the same scale, you can combine them. 
+    
+
+    Plot all the raw energies to show the proteins itself 
+
+    Blood plasma vs. GLP-1R (negative basket, albumim, fibrinogen)
+    Case: receptor vs protein in the blood stream. (molar concentration/ unit volume)
+
+    """
+    #HDL Receptor Binding Region:
+    #insert_target_protein = ["MGCSAKARWAAGALGVAGLLCAVLGAVMIVMVPSLIKQQVLKNVRIDPSSLSFNMWKEIPIPFYLSVYFFDVMNPSEILKGEKPQVRERGPYVYREFRHKSNITFNNNDTVSFLEYRTFQFQPSKSHGSESDYIVMPNILVLGAAVMMENKPMTLKLIMTLAFTTLGERAFMNRTVGEIMWGYKDPLVNLINKYFPGMFPFKDKFGLFAELNNSDSGLFTVFTGVQNISRIHLVDKWNGLSKVDFWHSDQCNMINGTSGQMWPPFMTPESSLEFYSPEACRSMKLMYKESGVFEGIPTYRFVAPKTLFANGSIYPPNEGFCPCLESGIQNVSTCRFSAPLFLSHPHFLNADPVLAEAVTGLHPNQEAHSLFLDIHPVTGIPMNCSVKLQLSLYMKSVAGIGQTGKIEPVVLPLLWFAESGAMEGETLHTFYTQLVLMPKVMHYAQYVLLALGCVLLLVPVICQIRSQVGAGQRAARADSHSLACWGKGASDRTLWPTAAWSPPPAAVLRLCRSGSGHCWGLRSTLASFACRVATTLPVLEGLGPSLGGGTGS"]
+
+    #LDL Receptor Binding Region
+    #insert_non_targets = ["MGPWGWKLRWTVALLLAAAGTAVGDRCERNEFQCQDGKCISYKWVCDGSAECQDGSDESQETCLSVTCKSGDFSCGGRVNRCIPQFWRCDGQVDCDNGSDEQGCPPKTCSQDEFRCHDGKCISRQFVCDSDRDCLDGSDEASCPVLTCGPASFQCNSSTCIPQLWACDNDPDCEDGSDEWPQRCRGLYVFQGDSSPCSAFEFHCLSGECIHSSWRCDGGPDCKDKSDEENCAVATCRPDEFQCSDGNCIHGSRQCDREYDCKDMSDEVGCVNVTLCEGPNKFKCHSGECITLDKVCNMARDCRDWSDEPIKECGTNECLDNNGGCSHVCNDLKIGYECLCPDGFQLVAQRRCEDIDECQDPDTCSQLCVNLEGGYKCQCEEGFQLDPHTKACKAVGSIAYLFFTNRHEVRKMTLDRSEYTSLIPNLRNVVALDTEVASNRIYWSDLSQRMICSTQLDRAHGVSSYDTVISRDIQAPDGLAVDWIHSNIYWTDSVLGTVSVADTKGVKRKTLFRENGSKPRAIVVDPVHGFMYWTDWGTPAKIKKGGLNGVDIYSLVTENIQWPNGITLDLLSGRLYWVDSKLHSISSIDVNGGNRKTILEDEKRLAHPFSLAVFEDKVFWTDIINEAIFSANRLTGSDVNLLAENLLSPEDMVLFHNLTQPRGVNWCERTTLSNGGCQYLCLPAPQINPHSPKFTCACPDGMLLARDMRSCLTEAEAAVATQETSTVRLKVSSTAVRTQHTTTRPVPDTSRLPGATPGLTTVEIVTMSHQALGDVAGRGNEKKPSSVRALSIVLPIVLLVFLCLGVFLLWKNWRLKNINSINFDNPVYQKTTEDEVHICHNQDGYSYPSRQMVSLEDDVA"
+    #]
+    
+    #Create a dictionary to store the proteins and its relative weights: 
+    name_to_seq = {
+        "apoB": "MDPPRPALLALLALPALLLLLLAGARAEEEMLENVSLVCPKDATRFKHLRKYTYNYEAESSSGVPGTADSRSATRINCKVELEVPQLCSFILKTSQCTLKEVYGFNPEGKALLKKTKNSEEFAAAMSRIPCMETAPLTLPSRRGRAMWQQKYPLKETWGSVIASSPSAQASAHLLSSKA",
+        "apoA": "MKAAVLTLAVLFLTGSQARHFWQQDEPPQSPWDRVKDLATVYVDVLKDSGRDYVSQFEGSALGKQLNLKLLDNWDSVTSTFSKLREQLGPVTQEFWDNLEKETEGLRQEMSKDLEEVKAKVQPYLDDFQKKWQEEMELYRQKVEPLRAELQEGARQKLHELQEKLSPLGEEMRDRARAHVDALRTHLAPYSDELRQRLAARLEALKENGGARLAEYHAKATEHLSTLSEKAKPALEDLRQGLLPVLESFKVSFLSALEEYTKKLNTQ",
+        "apoC": "MQPRVLLVVALLALLASARASEAEDASLLSFMQGYMKHATKTAKDALSSVQESQVAQQARGWVTDGFSSLKDYWSTVKDKFSEFWDLDPEVRPTSAVAA",
+        "apoD": "MVMLLLLLSALAGLFGAAEGQAFHLGKCPNPPVQENFDVNKYLGRWYEIEKIPTTFENGRCIQANYSLMENGKIKVLNQELRADGTVNQIEGEATPVNLTEPAKLEVKFSWFMPSAPYWILATDYENYALVYSCTCIIQLFHVDFAWILARNPNLPPETVDSLKNILTSNNIDVKKMTVTDQVNCPKLS",
+        "apoE": "MKVLWAALLVTFLAGCQAKVEQAVETEPEPELRQQTEWQSGQRWELALGRFWDYLRWVQTLSEQVQEELLSSQVTQELRALMDETMKELKAYKSELEEQLTPVAEETRARLSKELQAAQARLGADMEDVCGRLVQYRGEVQAMLGQSTEELRVRLASHLRKLRKRLLRDADDLQKRLAVYQAGAREGAERGLSAIRERLGPLVEQGRVRAATVGSLAGQPLQERAQAWGERLRARMEEMGSRTRDRLDEVKEQVAEVRAKLEEQAQQIRLQAEAFQARLKSWFEPLVEDMQRQWAGLVEKVQAAVGTSAAPVPSDNH"
+    }
+
+    concentrations = {'apoB': 0.4514, 
+                       'apoA': 0.4937, 
+                       'apoC': 0.0398, 
+                       'apoD': 0.00098, 
+                       'apoE': 0.0152
+                       }
+
+    #apoB (length = 179)
+    insert_target_protein = [name_to_seq[name] for name in ["apoB"]]
+
+    #non-target = apoA, apoC, apoD, apoE
+    insert_non_targets  = [name_to_seq[name] for name in ["apoA", "apoC", "apoD", "apoE"]]
+
+    segment_size = 300  #peptriever limtiation
+    targets, non_targets = split_sequence(insert_target_protein, insert_non_targets, segment_size)
+
+    print([f"Target {i}: {len(seq)}" for i, seq in enumerate(targets)])
+    print([f"Non-target {i}: {len(seq)}" for i, seq in enumerate(non_targets)])
+
+    # Instantiate the loss function to calculate energy
+    lossfn_instance = LossFn(target_proteins = targets, 
+                             non_targets = non_targets, 
+                             concentrations = concentrations,
+                             name_to_seq = name_to_seq
+                            )
+
+    # Instantiate the class to run MC evolution
+    temp = 0.1
+    evolve_system = Engine(
+        loss_fn=lossfn_instance,
+        temperature=temp,
+        #apoA sequence (binds to HDL):
+        peptide_length=20,
+        n_trials=1000,
+        record_interval=10,
+    )    
+
+    # Run Monte Carlo Evolution
+    evolve_system.initialize_sequence()
+    evolve_system.run_all_steps()
+
+    initial_sequence = evolve_system.starting_sequence
+    evolved_sequence = evolve_system.optimized_sequence
+
+    initial_energy = evolve_system.track_energy[0]
+    final_energy = evolve_system.track_energy[-1]
+
+    acceptance_rate = (evolve_system.tracker['n_accepted'] / max(evolve_system.tracker['n_proposals'], 1)) * 100
+
+    # Output results
+    print(f"Initial MC sequence: {initial_sequence}")
+    print(f"Evolved MC sequence: {evolved_sequence}")
+    print(f"Initial Energy is {initial_energy} and final energy is {final_energy}")
+    print(f"Final Energy is {evolve_system.best_energy}")
+    print(f"Final acceptance rate (%): {acceptance_rate}")
+    print(f"Tracker: {evolve_system.tracker}")
+    print(f"best 10 sequences are: {evolve_system.best_sequences_list}")
+
+    assert evolve_system.best_energy < initial_energy, "The energy should be minimized"
+
+    # View plots
+    output_dir = Path(__file__).parent / "output"
+    output_dir.mkdir(exist_ok=True)
+
+    evolve_system.plot_energy(output_dir / f"APO_energy_temp-{temp}.png")
+    evolve_system.plot_raw_energy(output_dir / f"APO_raw_energy_temp-{temp}.png")
+    evolve_system.plot_acceptance_rate(output_dir / f"APO_acceptance_rate_temp-{temp}.png")
+
+def main_sa(): 
+    """For running simulated annealing"""
+    name_to_seq = {
+        "apoB": "MDPPRPALLALLALPALLLLLLAGARAEEEMLENVSLVCPKDATRFKHLRKYTYNYEAESSSGVPGTADSRSATRINCKVELEVPQLCSFILKTSQCTLKEVYGFNPEGKALLKKTKNSEEFAAAMSRIPCMETAPLTLPSRRGRAMWQQKYPLKETWGSVIASSPSAQASAHLLSSKA",
+        "apoA": "MKAAVLTLAVLFLTGSQARHFWQQDEPPQSPWDRVKDLATVYVDVLKDSGRDYVSQFEGSALGKQLNLKLLDNWDSVTSTFSKLREQLGPVTQEFWDNLEKETEGLRQEMSKDLEEVKAKVQPYLDDFQKKWQEEMELYRQKVEPLRAELQEGARQKLHELQEKLSPLGEEMRDRARAHVDALRTHLAPYSDELRQRLAARLEALKENGGARLAEYHAKATEHLSTLSEKAKPALEDLRQGLLPVLESFKVSFLSALEEYTKKLNTQ",
+        "apoC": "MQPRVLLVVALLALLASARASEAEDASLLSFMQGYMKHATKTAKDALSSVQESQVAQQARGWVTDGFSSLKDYWSTVKDKFSEFWDLDPEVRPTSAVAA",
+        "apoD": "MVMLLLLLSALAGLFGAAEGQAFHLGKCPNPPVQENFDVNKYLGRWYEIEKIPTTFENGRCIQANYSLMENGKIKVLNQELRADGTVNQIEGEATPVNLTEPAKLEVKFSWFMPSAPYWILATDYENYALVYSCTCIIQLFHVDFAWILARNPNLPPETVDSLKNILTSNNIDVKKMTVTDQVNCPKLS",
+        "apoE": "MKVLWAALLVTFLAGCQAKVEQAVETEPEPELRQQTEWQSGQRWELALGRFWDYLRWVQTLSEQVQEELLSSQVTQELRALMDETMKELKAYKSELEEQLTPVAEETRARLSKELQAAQARLGADMEDVCGRLVQYRGEVQAMLGQSTEELRVRLASHLRKLRKRLLRDADDLQKRLAVYQAGAREGAERGLSAIRERLGPLVEQGRVRAATVGSLAGQPLQERAQAWGERLRARMEEMGSRTRDRLDEVKEQVAEVRAKLEEQAQQIRLQAEAFQARLKSWFEPLVEDMQRQWAGLVEKVQAAVGTSAAPVPSDNH"
+    }
+
+    concentrations = {'apoB': 0.4514, 
+                       'apoA': 0.4937, 
+                       'apoC': 0.0398, 
+                       'apoD': 0.00098, 
+                       'apoE': 0.0152
+                       }
+
+    #apoB (length = 179)
+    insert_target_protein = [name_to_seq[name] for name in ["apoB"]]
+
+    #non-target = apoA, apoC, apoD, apoE
+    insert_non_targets  = [name_to_seq[name] for name in ["apoA", "apoC", "apoD", "apoE"]]
+
+    segment_size = 300  #peptriever limtiation
+    targets, non_targets = split_sequence(insert_target_protein, insert_non_targets, segment_size)
+
+    print([f"Target {i}: {len(seq)}" for i, seq in enumerate(targets)])
+    print([f"Non-target {i}: {len(seq)}" for i, seq in enumerate(non_targets)])
+
+    #Simulated Annealing Algorithim Parameters: 
+    temp = 0.1
+    stopping_temp = 0.0000001
+    alpha = 0.9
+    stopping_iter = 10000
+
+    lossfun_sa = LossFn(
+        target_proteins = targets, 
+        non_targets = non_targets,
+        concentrations = concentrations,
+        name_to_seq = name_to_seq
+    ) 
+
+    sa = SimulatedAnnealing(
+        loss_fn = lossfun_sa, 
+        temperature = temp,
+        alpha = alpha, 
+        stopping_temp = stopping_temp, 
+        stopping_iter = stopping_iter,
+        peptide_length=30,
+        n_trials = 1000,
+        record_interval = 10
+    )
+    #Run the Simulated Annealing:
+    #sa.default_cooling_schedule()
+    sa.run_simulated_annealing()
+
+    sa_initial_sequence = sa.starting_sequence
+    sa_evolved_sequence = sa.optimized_sequence
+    
+    sa_initial_energy = sa.track_energy[0]
+    sa_final_energy = sa.track_energy[-1]
+    
+    acceptance_rate = (sa.tracker['n_accepted'] / max(sa.tracker['n_proposals'], 1)) * 100
+
+    output_dir = Path(__file__).parent / "output"
+    output_dir.mkdir(exist_ok=True)
+    sa.plot_energy(output_dir / f"Simulated Annealing.png")
+    sa.plot_raw_janin(output_dir / f"Simulated Annealing Janin.png")
+    sa.plot_acceptance_rate(output_dir / f"Simulatd Annealing Acceptance Rate.png")
+    
+    
+    # Output results
+    print(f"Initial MC sequence: {sa_initial_sequence}")
+    print(f"Evolved MC sequence: {sa_evolved_sequence}")
+    print(f"Initial Energy is {sa_initial_energy} and final energy is {sa_final_energy}")
+    print(f"Final Energy is {sa.best_energy}")
+    print(f"Final acceptance rate (%): {acceptance_rate}")
+    print(f"Tracker: {sa.tracker}")
+    print(f"best 10 sequences are: {sa.best_sequences_list}")
+
+    
+if __name__ == "__main__":
+    #main_engine()
+    main_sa()
