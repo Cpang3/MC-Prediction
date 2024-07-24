@@ -1,0 +1,30 @@
+from fasta import FASTQ
+
+MC_sequences = {"seq1" : "WVASVQVTMGDPGCVAVTNC",
+                "seq2" : "VKWFNDDPMQFVKIVFLPNG",
+                "seq3" : "VKWFNDDPMQFVKIIFLPNG",
+                "seq4" : "DLKWVMQWWFAQRPAPHILL",
+                "seq5" : "TGLWVMGWMLAFCEAPHILL",
+                "seq6" : "TPLWVMGWMLAFCEAPHILL",
+                "seq7" : "TKLWVMGWMLAFFEAPHILL",
+                "seq8" : "TKKWVMGWMQAFFEAPHILL",
+                "seq9" : "FLYLLDCQWLDPCMYFVPVP",
+                "seq10" : "RCNWPMNWLHWWCNAVINWT",
+                "seq11" : "AVCNPWVKHFPMGAPWMLDP",
+            }
+
+#checking the outputs
+print(MC_sequences.items())
+
+output_path = 'MC_sequences_fasta.txt'
+output_file = open(output_path, 'w')
+
+#Iterating through the dictionary
+for seq_id, seq in MC_sequences.items():
+    identifier_line = ">" + seq_id + "\n"
+    output_file.write(identifier_line)
+    sequence_line = seq + "\n"
+    output_file.write(sequence_line)
+
+#Closing the file
+output_file.close()
